@@ -98,10 +98,8 @@ function spawnSnow(arr, count, o){
 }
 
 function initSnow(){
-  // TĂNG MẬT ĐỘ: chia mẫu nhỏ hơn => nhiều hạt hơn
   const base = (W * H) / 8500;
 
-  // Medium flakes
   spawnSnow(snowA, Math.floor(base * 1.35), {
     rMin: 1.0, rMax: 3.1,
     vyMin: 0.8, vyMax: 2.3,
@@ -110,7 +108,6 @@ function initSnow(){
     wobSpdMin: 0.6, wobSpdMax: 2.2
   });
 
-  // Small flakes
   spawnSnow(snowB, Math.floor(base * 2.8), {
     rMin: 0.35, rMax: 1.5,
     vyMin: 0.5, vyMax: 1.6,
@@ -119,7 +116,6 @@ function initSnow(){
     wobSpdMin: 0.8, wobSpdMax: 3.2
   });
 
-  // Micro flakes (NEW layer, very many)
   spawnSnow(snowC, Math.floor(base * 3.6), {
     rMin: 0.18, rMax: 0.75,
     vyMin: 0.35, vyMax: 1.15,
@@ -314,7 +310,6 @@ function frame(ts){
 
   clearBG();
 
-  // Snow: micro behind, then small, then medium (denser overall)
   drawSnowLayer(snowC, ts, 0.65, 0.9);
   drawSnowLayer(snowB, ts, 0.85, 1.0);
   drawSnowLayer(snowA, ts, 1.00, 1.05);
@@ -342,7 +337,7 @@ function frame(ts){
   // ===== TREE FINISHED =====
   if (!treeFinished && t >= 1){
     treeFinished = true;
-    setTimeout(showTouch, 350); // delay nhẹ cho cinematic
+    setTimeout(showTouch, 350);
   }
 
   requestAnimationFrame(frame);
@@ -350,4 +345,5 @@ function frame(ts){
 
 resize();
 addEventListener("resize", resize);
+
 requestAnimationFrame(frame);
