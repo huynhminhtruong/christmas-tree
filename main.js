@@ -122,7 +122,6 @@ function rand(min,max){ return min + Math.random()*(max-min); }
 function initGpuParticles(){
   gpuSpark.length = 0;
 
-  // sparkle bám quanh cây
   for(let i=0;i<GPUQ.spark;i++){
     const tt = rand(0.08, 0.98);
     const p  = pointOnSpiral(tt);
@@ -139,7 +138,6 @@ function initGpuParticles(){
 
 function packSnowLayer(arr, time, alphaMul, driftMul, out, k){
   for(const p of arr){
-    // y chang drawSnowLayer (CPU version) nhưng giờ chỉ pack để GPU vẽ
     p.wob += p.wobSpd*0.01;
     p.x += p.vx + Math.sin(p.wob + time*0.001)*0.18*driftMul;
     p.y += p.vy;
@@ -150,9 +148,9 @@ function packSnowLayer(arr, time, alphaMul, driftMul, out, k){
 
     out[k++] = p.x;
     out[k++] = p.y;
-    out[k++] = p.r * 2.2;         // gl_PointSize ~ đường kính
-    out[k++] = 0.0;               // kind snow
-    out[k++] = p.a * alphaMul;    // đúng alphaMul layer cũ
+    out[k++] = p.r * 2.2;
+    out[k++] = 0.0;
+    out[k++] = p.a * alphaMul;
   }
   return k;
 }
@@ -175,12 +173,10 @@ function renderGpuParticles(time){
 
   let k = 0;
 
-  // pack snow đúng thứ tự layer cũ
   k = packSnowLayer(snowC, time, 0.65, 0.90, gpuPacked, k);
   k = packSnowLayer(snowB, time, 0.85, 1.00, gpuPacked, k);
   k = packSnowLayer(snowA, time, 1.00, 1.05, gpuPacked, k);
 
-  // pack sparkle
   for(let i=0;i<gpuSpark.length;i++){
     const s = gpuSpark[i];
     const blink = 0.25 + 0.75 * Math.max(0.0, Math.sin(time*0.006*s.speed + s.phase + i));
@@ -191,7 +187,6 @@ function renderGpuParticles(time){
     gpuPacked[k++] = s.baseA * blink;
   }
 
-  // upload 1 lần
   gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
   gl.bufferData(gl.ARRAY_BUFFER, gpuPacked, gl.DYNAMIC_DRAW);
 
@@ -210,11 +205,9 @@ function renderGpuParticles(time){
   gl.enableVertexAttribArray(locAlpha);
   gl.vertexAttribPointer(locAlpha, 1, gl.FLOAT, false, STRIDE_BYTES, 4*BYTES);
 
-  // 1) draw snow (alpha)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.drawArrays(gl.POINTS, 0, snowCount);
 
-  // 2) draw sparkle (additive)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
   gl.drawArrays(gl.POINTS, snowCount, sparkCount);
 }
@@ -584,5 +577,6 @@ function frame(ts){
 
 resize();
 addEventListener("resize", resize);
+
 
 requestAnimationFrame(frame);
