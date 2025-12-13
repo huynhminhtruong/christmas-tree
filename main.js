@@ -102,21 +102,19 @@ const locRes   = gl.getUniformLocation(prog, "u_res");
 
 const vbo = gl.createBuffer();
 gl.enable(gl.BLEND);
-// tuyết + sparkle alpha “đẹp an toàn”
 gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-// Nếu muốn sparkle “sáng rực” hơn, đổi sang additive:
-// gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+// Use additive blending for sparkle
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
 gl.disable(gl.DEPTH_TEST);
 
 const gpuSpark = [];
 let gpuPacked = null;
 
-// bạn có thể tăng/giảm tuỳ máy
 const GPUQ = {
   snow: 2200,
   spark: 220,
-  wind: 0.55,      // giống driftMul
+  wind: 0.55,
 };
 
 function rand(min,max){ return min + Math.random()*(max-min); }
@@ -235,9 +233,9 @@ const tree = {
   taperPow: 1.15
 };
 
-const snowA = [];     // medium
-const snowB = [];     // small
-const snowC = [];     // micro (NEW)
+const snowA = [];
+const snowB = [];
+const snowC = [];
 const clusters = [];
 
 function pointOnSpiral(tt){
@@ -252,11 +250,13 @@ function gauss(x,mu,sigma){
   const z=(x-mu)/sigma;
   return Math.exp(-0.5*z*z);
 }
+
 function runningGlow(time, tt){
   const head=(time*0.00020) % 1;
   let d=Math.abs(tt-head); d=Math.min(d, 1-d);
   return gauss(d, 0, 0.030);
 }
+
 function breathing(time){
   return 0.70 + 0.30 * Math.sin(time * 0.0021);
 }
