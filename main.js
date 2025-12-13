@@ -4,6 +4,223 @@
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
 
+/* =========================
+   WEBGL PARTICLES (GPU)
+========================= */
+const glCanvas = document.getElementById("cgl");
+const gl = glCanvas.getContext("webgl", {
+  alpha: true,
+  premultipliedAlpha: false,
+  antialias: false,
+  depth: false,
+  stencil: false,
+  preserveDrawingBuffer: false,
+  powerPreference: "high-performance"
+});
+
+function compileShader(gl, type, src){
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+    const info = gl.getShaderInfoLog(sh);
+    gl.deleteShader(sh);
+    throw new Error(info);
+  }
+  return sh;
+}
+function createProgram(gl, vsSrc, fsSrc){
+  const vs = compileShader(gl, gl.VERTEX_SHADER, vsSrc);
+  const fs = compileShader(gl, gl.FRAGMENT_SHADER, fsSrc);
+  const p  = gl.createProgram();
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+    const info = gl.getProgramInfoLog(p);
+    gl.deleteProgram(p);
+    throw new Error(info);
+  }
+  gl.deleteShader(vs); gl.deleteShader(fs);
+  return p;
+}
+
+const VS = `
+attribute vec2 a_pos;     // pixel
+attribute float a_size;   // pixel
+attribute float a_kind;   // 0 snow, 1 sparkle
+attribute float a_alpha;  // 0..1
+
+uniform vec2 u_res;
+
+varying float v_kind;
+varying float v_alpha;
+
+void main(){
+  vec2 clip = (a_pos / u_res) * 2.0 - 1.0;
+  clip.y *= -1.0;
+  gl_Position = vec4(clip, 0.0, 1.0);
+  gl_PointSize = a_size;
+  v_kind = a_kind;
+  v_alpha = a_alpha;
+}
+`;
+
+const FS = `
+precision mediump float;
+
+varying float v_kind;
+varying float v_alpha;
+
+void main(){
+  vec2 uv = gl_PointCoord - vec2(0.5);
+  float r  = length(uv);
+
+  // base soft circle
+  float core = smoothstep(0.5, 0.0, r);
+
+  // sparkle sharper + tiny halo
+  float shape = mix(core, pow(core, 3.0), step(0.5, v_kind));
+  float halo  = 0.0;
+  if(v_kind > 0.5){
+    halo = smoothstep(0.5, 0.0, r) * 0.35;
+  }
+
+  float a = (shape + halo) * v_alpha;
+  gl_FragColor = vec4(1.0, 1.0, 1.0, a);
+}
+`;
+
+const prog = createProgram(gl, VS, FS);
+gl.useProgram(prog);
+
+const locPos   = gl.getAttribLocation(prog, "a_pos");
+const locSize  = gl.getAttribLocation(prog, "a_size");
+const locKind  = gl.getAttribLocation(prog, "a_kind");
+const locAlpha = gl.getAttribLocation(prog, "a_alpha");
+const locRes   = gl.getUniformLocation(prog, "u_res");
+
+const vbo = gl.createBuffer();
+gl.enable(gl.BLEND);
+// tuyết + sparkle alpha “đẹp an toàn”
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+// Nếu muốn sparkle “sáng rực” hơn, đổi sang additive:
+// gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+gl.disable(gl.DEPTH_TEST);
+
+const gpuSpark = [];
+let gpuPacked = null;
+
+// bạn có thể tăng/giảm tuỳ máy
+const GPUQ = {
+  snow: 2200,
+  spark: 220,
+  wind: 0.55,      // giống driftMul
+};
+
+function rand(min,max){ return min + Math.random()*(max-min); }
+
+function initGpuParticles(){
+  gpuSpark.length = 0;
+
+  // sparkle bám quanh cây
+  for(let i=0;i<GPUQ.spark;i++){
+    const tt = rand(0.08, 0.98);
+    const p  = pointOnSpiral(tt);
+    gpuSpark.push({
+      x: p.x + rand(-18, 18),
+      y: p.y + rand(-16, 16),
+      baseA: rand(0.10, 0.55),
+      size: rand(2.2, 5.8),
+      phase: rand(0, Math.PI*2),
+      speed: rand(0.8, 1.7)
+    });
+  }
+}
+
+function packSnowLayer(arr, time, alphaMul, driftMul, out, k){
+  for(const p of arr){
+    // y chang drawSnowLayer (CPU version) nhưng giờ chỉ pack để GPU vẽ
+    p.wob += p.wobSpd*0.01;
+    p.x += p.vx + Math.sin(p.wob + time*0.001)*0.18*driftMul;
+    p.y += p.vy;
+
+    if(p.y > H+12){ p.y = -12; p.x = Math.random()*W; }
+    if(p.x < -12) p.x = W+12;
+    if(p.x > W+12) p.x = -12;
+
+    out[k++] = p.x;
+    out[k++] = p.y;
+    out[k++] = p.r * 2.2;         // gl_PointSize ~ đường kính
+    out[k++] = 0.0;               // kind snow
+    out[k++] = p.a * alphaMul;    // đúng alphaMul layer cũ
+  }
+  return k;
+}
+
+function renderGpuParticles(time){
+  gl.viewport(0,0, glCanvas.width, glCanvas.height);
+  gl.clearColor(0,0,0,0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.useProgram(prog);
+  gl.uniform2f(locRes, W, H);
+
+  const snowCount = snowA.length + snowB.length + snowC.length;
+  const sparkCount = gpuSpark.length;
+  const total = snowCount + sparkCount;
+
+  const stride = 5;
+  const need = total * stride;
+  if(!gpuPacked || gpuPacked.length !== need) gpuPacked = new Float32Array(need);
+
+  let k = 0;
+
+  // pack snow đúng thứ tự layer cũ
+  k = packSnowLayer(snowC, time, 0.65, 0.90, gpuPacked, k);
+  k = packSnowLayer(snowB, time, 0.85, 1.00, gpuPacked, k);
+  k = packSnowLayer(snowA, time, 1.00, 1.05, gpuPacked, k);
+
+  // pack sparkle
+  for(let i=0;i<gpuSpark.length;i++){
+    const s = gpuSpark[i];
+    const blink = 0.25 + 0.75 * Math.max(0.0, Math.sin(time*0.006*s.speed + s.phase + i));
+    gpuPacked[k++] = s.x;
+    gpuPacked[k++] = s.y;
+    gpuPacked[k++] = s.size * (0.85 + 0.35*blink);
+    gpuPacked[k++] = 1.0;
+    gpuPacked[k++] = s.baseA * blink;
+  }
+
+  // upload 1 lần
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, gpuPacked, gl.DYNAMIC_DRAW);
+
+  const BYTES = 4;
+  const STRIDE_BYTES = stride * BYTES;
+
+  gl.enableVertexAttribArray(locPos);
+  gl.vertexAttribPointer(locPos, 2, gl.FLOAT, false, STRIDE_BYTES, 0);
+
+  gl.enableVertexAttribArray(locSize);
+  gl.vertexAttribPointer(locSize, 1, gl.FLOAT, false, STRIDE_BYTES, 2*BYTES);
+
+  gl.enableVertexAttribArray(locKind);
+  gl.vertexAttribPointer(locKind, 1, gl.FLOAT, false, STRIDE_BYTES, 3*BYTES);
+
+  gl.enableVertexAttribArray(locAlpha);
+  gl.vertexAttribPointer(locAlpha, 1, gl.FLOAT, false, STRIDE_BYTES, 4*BYTES);
+
+  // 1) draw snow (alpha)
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.drawArrays(gl.POINTS, 0, snowCount);
+
+  // 2) draw sparkle (additive)
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+  gl.drawArrays(gl.POINTS, snowCount, sparkCount);
+}
+
 const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
 const DPR = ()=>Math.max(1, Math.min(2.5, window.devicePixelRatio || 1));
 
@@ -98,30 +315,45 @@ function spawnSnow(arr, count, o){
 }
 
 function initSnow(){
-  const base = (W * H) / 8500;
+  const base = (W * H) / 4200;
 
-  spawnSnow(snowA, Math.floor(base * 1.35), {
-    rMin: 1.0, rMax: 3.1,
-    vyMin: 0.8, vyMax: 2.3,
-    vxMin: -0.7, vxMax: 0.7,
-    aMin: 0.32, aMax: 0.95,
-    wobSpdMin: 0.6, wobSpdMax: 2.2
+  // Layer A -> Large
+  spawnSnow(snowA, Math.floor(base * 2.10), {
+    rMin: 0.9, rMax: 4.6,
+    vyMin: 0.9, vyMax: 2.9,
+    vxMin: -0.95, vxMax: 0.95,
+    aMin: 0.28, aMax: 0.98,
+    wobSpdMin: 0.5, wobSpdMax: 2.6
   });
 
-  spawnSnow(snowB, Math.floor(base * 2.8), {
-    rMin: 0.35, rMax: 1.5,
-    vyMin: 0.5, vyMax: 1.6,
-    vxMin: -0.45, vxMax: 0.45,
-    aMin: 0.18, aMax: 0.65,
-    wobSpdMin: 0.8, wobSpdMax: 3.2
+  for (let i = 0; i < Math.floor(base * 0.08); i++){
+    snowA.push({
+      x: Math.random()*W, y: Math.random()*H,
+      r: rand(4.8, 7.6),
+      vy: rand(1.2, 2.8),
+      vx: rand(-1.1, 1.1),
+      a: rand(0.22, 0.55),
+      wob: Math.random()*Math.PI*2,
+      wobSpd: rand(0.4, 1.6)
+    });
+  }
+
+  // Layer B -> Medium
+  spawnSnow(snowB, Math.floor(base * 3.70), {
+    rMin: 0.30, rMax: 1.85,
+    vyMin: 0.55, vyMax: 1.85,
+    vxMin: -0.55, vxMax: 0.55,
+    aMin: 0.16, aMax: 0.70,
+    wobSpdMin: 0.7, wobSpdMax: 3.1
   });
 
-  spawnSnow(snowC, Math.floor(base * 3.6), {
-    rMin: 0.18, rMax: 0.75,
-    vyMin: 0.35, vyMax: 1.15,
-    vxMin: -0.30, vxMax: 0.30,
-    aMin: 0.10, aMax: 0.35,
-    wobSpdMin: 1.0, wobSpdMax: 3.8
+  // Layer C -> Small
+  spawnSnow(snowC, Math.floor(base * 4.90), {
+    rMin: 0.14, rMax: 1.05,
+    vyMin: 0.40, vyMax: 1.25,
+    vxMin: -0.35, vxMax: 0.35,
+    aMin: 0.08, aMax: 0.38,
+    wobSpdMin: 1.0, wobSpdMax: 4.2
   });
 }
 
@@ -152,14 +384,24 @@ function clusterGlow(time, tt){
 function resize(){
   const dpr=DPR();
   W=Math.floor(innerWidth); H=Math.floor(innerHeight);
+
   canvas.width=Math.floor(W*dpr);
   canvas.height=Math.floor(H*dpr);
   canvas.style.width=W+"px";
   canvas.style.height=H+"px";
   ctx.setTransform(dpr,0,0,dpr,0,0);
 
+  // NEW: resize WebGL canvas theo đúng buffer size
+  glCanvas.width = Math.floor(W*dpr);
+  glCanvas.height = Math.floor(H*dpr);
+  glCanvas.style.width = W + "px";
+  glCanvas.style.height = H + "px";
+
   initSnow();
   initClusters();
+
+  // NEW: init GPU particles after geometry ready
+  initGpuParticles();
 }
 
 /* =========================
@@ -310,9 +552,8 @@ function frame(ts){
 
   clearBG();
 
-  drawSnowLayer(snowC, ts, 0.65, 0.9);
-  drawSnowLayer(snowB, ts, 0.85, 1.0);
-  drawSnowLayer(snowA, ts, 1.00, 1.05);
+  // NEW (GPU snow + sparkle):
+  renderGpuParticles(ts);
 
   drawTreeHalo(ts);
 
@@ -325,8 +566,6 @@ function frame(ts){
     const intensity=clamp(0.45*breathe + 0.55*cl + 1.05*run, 0.25, 1);
     drawNeonSegment(a,b,intensity);
   }
-
-  drawGlitter(ts, pts);
 
   if(t>0.92){
     const top=pointOnSpiral(1);
